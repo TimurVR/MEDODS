@@ -26,18 +26,37 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-
-	created, err := h.usecase.Create(r.Context(), taskusecase.CreateInput{
+	input := taskusecase.CreateInput{
 		Title:       req.Title,
 		Description: req.Description,
 		Status:      req.Status,
-	})
-	if err != nil {
-		writeUsecaseError(w, err)
-		return
 	}
+	if req.Recurrence == nil {
+		//Логика для обычной разовой задачи
+		created, err := h.usecase.Create(r.Context(), input)
+		if err != nil {
+			writeUsecaseError(w, err)
+			return
+		}
 
-	writeJSON(w, http.StatusCreated, newTaskDTO(created))
+		writeJSON(w, http.StatusCreated, newTaskDTO(created))
+	} else {
+		//Логика для повторяющейся задачи
+		input.Recurrence = &taskdomain.RecurrenceRule{
+			Type:         req.Recurrence.Type,
+			Interval:     req.Recurrence.Interval,
+			DayOfMonth:   req.Recurrence.DayOfMonth,
+			SpecificDays: req.Recurrence.SpecificDays,
+			Parity:       req.Recurrence.Parity,
+			StartsAt:     req.Recurrence.StartsAt,
+		}
+		created, err := h.usecase.CreateTemplate(r.Context(), input)
+		if err != nil {
+			writeUsecaseError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, created)
+	}
 }
 
 func (h *TaskHandler) GetByID(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +74,21 @@ func (h *TaskHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, newTaskDTO(task))
 }
+func (h *TaskHandler) GetByIDTemplate(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 
+	template, err := h.usecase.GetByIDTemplate(r.Context(), id)
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTemplateDTO(template))
+}
 func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id, err := getIDFromRequest(r)
 	if err != nil {
@@ -81,6 +114,32 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, newTaskDTO(updated))
 }
+func (h *TaskHandler) UpdateTemplate(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	err = h.usecase.UpdateTemplate(r.Context(), id, taskusecase.UpdateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+		Recurrence:  req.Recurrence,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{})
+}
 
 func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := getIDFromRequest(r)
@@ -96,7 +155,20 @@ func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 }
+func (h *TaskHandler) DeleteTemplate(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 
+	if err := h.usecase.DeleteTemplate(r.Context(), id); err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
 func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 	tasks, err := h.usecase.List(r.Context())
 	if err != nil {
@@ -111,7 +183,20 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, response)
 }
+func (h *TaskHandler) ListTemplates(w http.ResponseWriter, r *http.Request) {
+	tasks, err := h.usecase.ListTemplate(r.Context())
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
 
+	response := make([]taskTemplateDTO, 0, len(tasks))
+	for i := range tasks {
+		response = append(response, newTemplateDTO(&tasks[i]))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
 func getIDFromRequest(r *http.Request) (int64, error) {
 	rawID := mux.Vars(r)["id"]
 	if rawID == "" {
